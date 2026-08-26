@@ -1,0 +1,38 @@
+<?php
+/**
+ * Vorlage fuer die eigene Konfiguration.
+ *
+ * Kopieren nach config.local.php und ausfuellen - diese Datei wird nicht
+ * versioniert, deine Zugangsdaten landen also nicht im Repository.
+ *
+ *   Windows:  copy config.local.php.example config.local.php
+ *   Linux:    cp config.local.php.example config.local.php
+ *
+ * Wichtig: Es sind die Zugangsdaten deines echten Kickbase-Accounts - die
+ * App hat keinen eigenen Login. Wer sich bei Kickbase mit Google oder Apple
+ * anmeldet, hat kein Passwort und muss sich in der Kickbase-App erst eines
+ * setzen, sonst antwortet die API mit "AccessDenied".
+ */
+
+return [
+    'kickbase' => [
+        'email'     => 'DEINE@EMAIL.DE',
+        'password'  => 'DEIN_PASSWORT',
+        // Leer lassen - bin/setup.php ermittelt sie und zeigt deine Ligen an.
+        'league_id' => '',
+    ],
+
+    // Nur noetig, wenn MySQL nicht mit root/root auf 127.0.0.1:3306 laeuft.
+    // 'db' => [
+    //     'host' => '127.0.0.1',
+    //     'port' => 3306,
+    //     'name' => 'kickbase',
+    //     'user' => 'root',
+    //     'pass' => '',
+    // ],
+
+    // Nur noetig, wenn bin/setup.php das PHP-CLI nicht selbst findet.
+    // 'web_sync' => [
+    //     'php_bin' => 'C:\\xampp\\php\\php.exe',
+    // ],
+];

@@ -1,0 +1,10 @@
+# Zeilenenden vereinheitlichen: im Repository immer LF, im Arbeitsverzeichnis
+# das, was die Plattform erwartet. Ohne das schleppt ein Windows-Rechner CRLF
+# in die Dateien und jeder Diff ist voller Scheinaenderungen.
+* text=auto eol=lf
+
+*.php  text eol=lf
+*.sql  text eol=lf
+*.css  text eol=lf
+*.js   text eol=lf
+*.md   text eol=lf
