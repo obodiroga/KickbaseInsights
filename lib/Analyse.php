@@ -1190,8 +1190,14 @@ class Analyse
             'mv_points'   => (int) $this->db->value('SELECT COUNT(*) FROM player_market_values'),
             'mv_pending'  => (int) $this->db->value(
                 'SELECT COUNT(*) FROM players WHERE mv_synced_at IS NULL'),
+            // Nur Fehler, die seit dem letzten erfolgreichen Lauf aufgetreten
+            // sind. Sonst haengt die Meldung auf dem Dashboard fest, auch wenn
+            // die Ursache laengst behoben ist.
             'last_error'  => $this->db->one(
-                "SELECT started_at, message FROM sync_runs WHERE status = 'error' ORDER BY id DESC LIMIT 1"),
+                "SELECT started_at, message FROM sync_runs
+                 WHERE status = 'error'
+                   AND id > COALESCE((SELECT MAX(id) FROM sync_runs WHERE status = 'ok'), 0)
+                 ORDER BY id DESC LIMIT 1"),
         ];
     }
 }

@@ -9,7 +9,10 @@ CREATE TABLE IF NOT EXISTS players (
     team_id        VARCHAR(16)  NULL,
     team_name      VARCHAR(100) NULL,
     position       TINYINT      NULL,
-    status         TINYINT      NULL,
+    -- Kickbase-Statuscode, keine fortlaufende Nummer sondern Bit-Flags
+    -- (1 verletzt, 2 angeschlagen, 4 Aufbautraining, ... 128). TINYINT
+    -- reicht dafuer nicht, 128 laeuft ueber.
+    status         SMALLINT     NULL,
     shirt_number   SMALLINT     NULL,
     market_value   BIGINT       NULL,
     mv_trend       TINYINT      NULL,
@@ -179,3 +182,12 @@ CREATE TABLE IF NOT EXISTS meta (
     v TEXT        NULL,
     PRIMARY KEY (k)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- --------------------------------------------------------------- Migrationen
+-- CREATE TABLE IF NOT EXISTS aendert bestehende Tabellen nicht. Was sich
+-- nachtraeglich an einer Spalte aendert, gehoert deshalb hier hin. Die
+-- Statements muessen sich beliebig oft wiederholen lassen.
+
+-- players.status war TINYINT. Der Kickbase-Statuscode 128 passt da nicht
+-- hinein - der Sync brach mit "Out of range value for column 'status'" ab.
+ALTER TABLE players MODIFY status SMALLINT NULL;
