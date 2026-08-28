@@ -227,7 +227,9 @@ foreach ($managers as $m) {
         Ein Spieler gehört in einer Liga höchstens einem Manager. Was hier steht, ist also
         tatsächlich zu haben, sobald es auf dem Transfermarkt erscheint. Spieler ohne bekannte
         Einsatzzahl fallen heraus, sonst stehen Eintagsfliegen oben – dieselbe Regel wie in der
-        Effizienz-Rangliste.
+        Effizienz-Rangliste. Sortiert ist nach Punkteschnitt; wer wissen will, bei welchen davon
+        der Marktwert demnächst <em>steigen</em> dürfte, findet das im
+        <a href="radar.php">Marktwert-Radar</a> unter „Noch frei“.
     </p>
 <?php endif; ?>
 

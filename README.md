@@ -486,6 +486,18 @@ mit der Klasse der Basis. Ein Erwartungswert von 40 Punkten entsteht meist aus
 halber Einsatzchance mal 80 Punkten – die Wirklichkeit ist dann 0 oder 80, nie
 40.
 
+Seit der Konkurrenzanalyse hat die Seite einen dritten Abschnitt: **Noch
+frei** – Spieler, die in der Liga niemandem gehören und bei denen ein
+Anstieg wahrscheinlich ist. Das ist die Verbindung aus beidem: die
+Kaufliste sagt, *worauf* sich das Warten lohnt, sobald einer davon
+angeboten wird.
+
+Damit das keine geratene Liste wird, holt `syncPerformances()` auch für
+die 25 besten freien Spieler die Spieltagsdaten. Ohne sie wäre die
+Einsatzquote unbekannt und würde stillschweigend als 100 % gerechnet –
+was die Erwartung nach oben verzerrt. Wo sie trotzdem fehlt, steht
+„unsicher“ an der Zeile und ein Hinweis unter der Tabelle.
+
 Grenzen: Der Zusammenhang ist ein Signal, kein Automat – die lineare
 Korrelation liegt bei etwa 0,17, einzelne Spieler weichen deutlich ab. Gelernt
 wird nur aus Spielern mit Spieltagsdaten (eigener Kader und aktuelle

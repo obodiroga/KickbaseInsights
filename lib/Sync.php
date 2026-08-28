@@ -560,18 +560,36 @@ class Sync
      * Der aktuelle Spieltag wird bei jedem Lauf neu geholt, aeltere Spieltage
      * aendern sich nicht mehr.
      */
-    public function syncPerformances($leagueId, $seasons = 2)
+    public function syncPerformances($leagueId, $seasons = 2, $freeLimit = 25)
     {
         // Eigener Kader und alles, was aktuell auf dem Markt steht - ohne
         // Spieltagsdaten waere jede Kaufempfehlung geraten.
+        //
+        // Dazu die besten Spieler, die in dieser Liga noch niemandem
+        // gehoeren. Ohne sie haette der Radar fuer genau die Kandidaten,
+        // die man kaufen koennte, keine Einsatzquote - und wuerde sie
+        // stillschweigend mit 100 Prozent annehmen. Die Zahl ist begrenzt,
+        // weil es ein Request je Spieler ist.
         $rows = $this->db->all(
             'SELECT DISTINCT player_id FROM (
                  SELECT player_id FROM squad_players WHERE league_id = ?
                  UNION
                  SELECT player_id FROM market_listings
                   WHERE league_id = ? AND gone_at IS NULL
-             ) AS beide',
-            [(string) $leagueId, (string) $leagueId]
+                 UNION
+                 -- Die Klammern sind Pflicht: ohne sie wuerden ORDER BY und
+                 -- LIMIT fuer das gesamte UNION gelten statt fuer diesen Zweig.
+                 (SELECT p.player_id
+                    FROM players p
+                    LEFT JOIN manager_players mp
+                           ON mp.player_id = p.player_id AND mp.league_id = ?
+                   WHERE mp.player_id IS NULL
+                     AND p.avg_points IS NOT NULL
+                     AND p.matches IS NOT NULL AND p.matches >= 3
+                   ORDER BY p.avg_points DESC
+                   LIMIT ' . (int) $freeLimit . ')
+             ) AS zusammen',
+            [(string) $leagueId, (string) $leagueId, (string) $leagueId]
         );
 
         $now   = date('Y-m-d H:i:s');

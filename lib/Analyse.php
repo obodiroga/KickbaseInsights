@@ -1252,6 +1252,58 @@ class Analyse
         return $this->attachOutlook($rows, $days);
     }
 
+    /**
+     * Freie Spieler mit erwarteter Marktwert-Entwicklung, groesster Anstieg
+     * zuerst.
+     *
+     * Die Umkehrung der Kaderliste: dort ist oben, was Geld kostet, hier
+     * oben, was Geld bringt. Der Sinn ist der Kaufzeitpunkt - wer vor dem
+     * Spieltag zugreift, kauft vor der Bewegung.
+     *
+     * Der Filter auf eine bekannte Einsatzzahl ist derselbe wie in
+     * freeAgents(): ohne die stehen Eintagsfliegen oben.
+     */
+    public function freeAgentOutlook($leagueId, $days = 3, $limit = 30, $minMatches = 3)
+    {
+        $rows = $this->db->all(
+            'SELECT p.player_id, p.market_value, p.market_value AS current_mv,
+                    p.known_name, p.first_name, p.last_name, p.team_name,
+                    p.position, p.status, p.avg_points, p.matches
+             FROM players p
+             LEFT JOIN manager_players mp
+                    ON mp.player_id = p.player_id AND mp.league_id = ?
+             WHERE mp.player_id IS NULL
+               AND p.market_value IS NOT NULL
+               AND p.avg_points IS NOT NULL
+               AND p.matches IS NOT NULL AND p.matches >= ?
+             ORDER BY p.avg_points DESC
+             LIMIT ' . (int) $limit,
+            [(string) $leagueId, (int) $minMatches]
+        );
+
+        $rows = $this->attachOutlook($rows, $days);
+
+        // attachOutlook sortiert nach groesstem Verlust - hier gilt das
+        // Gegenteil. Spieler ohne Erwartung bleiben unten, statt mit einer
+        // gedachten Null in die Mitte zu rutschen.
+        usort($rows, function ($a, $b) {
+            $x = $a['outlook']['pct'];
+            $y = $b['outlook']['pct'];
+            if ($x === null && $y === null) {
+                return 0;
+            }
+            if ($x === null) {
+                return 1;
+            }
+            if ($y === null) {
+                return -1;
+            }
+            return $x > $y ? -1 : ($x < $y ? 1 : 0);
+        });
+
+        return $rows;
+    }
+
     /** Haengt Prognose und Marktwert-Aussicht an eine Spielerliste. */
     private function attachOutlook(array $rows, $days)
     {

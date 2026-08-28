@@ -30,6 +30,7 @@ if (!$leagueId) {
 $response = $analyse->marketValueResponse($days);
 $squad    = $analyse->squadOutlook($leagueId, $days);
 $market   = $analyse->marketOutlook($leagueId, $days);
+$frei     = $analyse->freeAgentOutlook($leagueId, $days, 30);
 
 // Reicht die Datenbasis ueberhaupt?
 $totalCases = 0;
@@ -201,6 +202,64 @@ $rising = array_reverse($rising);
             </tbody>
         </table>
     </div>
+<?php endif; ?>
+
+<h2>Noch frei</h2>
+<?php
+$freiSteigend = [];
+foreach ($frei as $row) {
+    if ($row['outlook']['pct'] !== null && $row['outlook']['pct'] > 0) {
+        $freiSteigend[] = $row;
+    }
+}
+?>
+<p class="muted">
+    Spieler, die in dieser Liga <strong>niemandem gehören</strong> – und bei denen ein Anstieg
+    wahrscheinlich ist. Sie stehen aktuell nicht auf dem Transfermarkt; die Liste sagt, worauf
+    sich das Warten lohnt, sobald einer davon angeboten wird. Wer die Kader dahinter sehen
+    will: <a href="managers.php">Konkurrenz</a>.
+</p>
+<?php if (!$frei): ?>
+    <div class="card notice">
+        <p class="muted">
+            Es sind noch keine Mitspieler-Daten da – ohne sie ist nicht bekannt, wer frei ist.
+            Sie kommen beim Standardlauf mit: <code>php bin/sync.php</code>.
+        </p>
+    </div>
+<?php elseif (!$freiSteigend): ?>
+    <p class="muted">Derzeit kein freier Spieler mit erwartetem Anstieg.</p>
+<?php else: ?>
+    <div class="table-wrap">
+        <table>
+            <thead>
+            <tr>
+                <th>Spieler</th>
+                <th class="num">Marktwert</th>
+                <th class="num">Basis</th>
+                <th class="num">Einsatzchance</th>
+                <th class="num">erwartet</th>
+                <th class="num">in Euro</th>
+            </tr>
+            </thead>
+            <tbody>
+            <?php foreach ($freiSteigend as $row) { outlookRow($row); } ?>
+            </tbody>
+        </table>
+    </div>
+    <?php
+    $ohneQuote = 0;
+    foreach ($freiSteigend as $row) {
+        if ($row['forecast']['start_rate'] === null) { $ohneQuote++; }
+    }
+    ?>
+    <?php if ($ohneQuote): ?>
+        <p class="muted">
+            Bei <strong><?= $ohneQuote ?></strong> dieser Spieler ist die Einsatzquote noch
+            unbekannt – dort wird mit voller Einsatzchance gerechnet, was die Erwartung nach
+            oben verzerrt. Sie sind mit „unsicher“ markiert. Die Spieltagsdaten der besten
+            freien Spieler kommen beim Standardlauf nach.
+        </p>
+    <?php endif; ?>
 <?php endif; ?>
 
 <div class="card notice">
