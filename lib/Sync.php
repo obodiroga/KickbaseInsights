@@ -658,6 +658,10 @@ class Sync
         try {
             $this->syncMarket($leagueId);
             $this->syncSquad($leagueId);
+            // Ein einziger Request, gehoert aber genau hierhin: Kickbase gibt
+            // nur die juengsten Eintraege heraus. Liefe das nur im vollen
+            // Sync mit, haette der Feed nach jedem laengeren Abstand Loecher.
+            $this->syncActivities($leagueId);
             // Billig und rein lokal - haelt das Protokoll auch bei kurzen
             // Laeufen auf dem letzten Stand.
             $this->logForecasts($leagueId);

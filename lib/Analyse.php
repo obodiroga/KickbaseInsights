@@ -1177,6 +1177,205 @@ class Analyse
         return $out;
     }
 
+    // -------------------------------------------------------- Liga-Aktivitaeten
+
+    /**
+     * Aktivitaeten der Liga, aufbereitet und mit dem Marktwert zum Zeitpunkt
+     * des Geschehens verknuepft.
+     *
+     * Die Typ-Nummern sind nicht dokumentiert. Die Bedeutung ist aus den
+     * eigenen Daten abgeleitet und dort jederzeit nachpruefbar:
+     *
+     *   3   Kickbase stellt einen Spieler auf den Markt. 34 von 34 dieser
+     *       Meldungen tauchten danach als Angebot auf, ausnahmslos mit
+     *       Kickbase als Verkaeufer - und die Angebote von Mitspielern
+     *       hatten umgekehrt nie eine solche Meldung davor.
+     *   15  Transfer. data.t = 1 ist ein Kauf (data.byr = Kaeufer),
+     *       data.t = 2 ein Verkauf (data.slr = Verkaeufer). Gilt fuer alle
+     *       bisher erfassten Zeilen ohne Ausnahme.
+     *   22  Tagesbonus (data.bn = Betrag, data.day = Spieltag).
+     *
+     * Richtung und Managername stehen nur im Rohdatensatz. Sie hier zu
+     * parsen statt in eigene Spalten zu syncen kostet bei diesen Mengen
+     * nichts und macht eine spaetere Korrektur ohne Migration moeglich.
+     */
+    public function activityFeed($leagueId, $days = 30, $limit = 500)
+    {
+        $rows = $this->db->all(
+            'SELECT a.activity_id, a.type, a.happened_at, a.player_id, a.price, a.raw,
+                    p.known_name, p.first_name, p.last_name, p.position, p.status, p.image,
+                    (SELECT mv.market_value FROM player_market_values mv
+                      WHERE mv.player_id = a.player_id AND mv.day <= DATE(a.happened_at)
+                      ORDER BY mv.day DESC LIMIT 1) AS mv_at
+             FROM activities a
+             LEFT JOIN players p ON p.player_id = a.player_id
+             WHERE a.league_id = ? AND a.happened_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+             ORDER BY a.happened_at DESC
+             LIMIT ' . (int) $limit,
+            [(string) $leagueId, (int) $days]
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $raw  = json_decode((string) $row['raw'], true);
+            $data = (is_array($raw) && isset($raw['data']) && is_array($raw['data'])) ? $raw['data'] : [];
+
+            $row['kind']     = 'other';
+            $row['manager']  = null;
+            $row['bonus']    = null;
+            $row['matchday'] = null;
+
+            switch ((int) $row['type']) {
+                case 15:
+                    $dir            = pickInt($data, ['t']);
+                    $row['kind']    = $dir === 2 ? 'sell' : 'buy';
+                    $row['manager'] = pick($data, $dir === 2 ? ['slr'] : ['byr']);
+                    break;
+                case 3:
+                    $row['kind'] = 'listed';
+                    // Die Meldung bringt den Marktwert des Moments mit. Der
+                    // ist genauer als der Tageswert aus der Historie.
+                    $mv = pickInt($data, ['mv']);
+                    if ($mv !== null) {
+                        $row['mv_at'] = $mv;
+                    }
+                    break;
+                case 22:
+                    $row['kind']     = 'bonus';
+                    $row['bonus']    = pickInt($data, ['bn']);
+                    $row['matchday'] = pickInt($data, ['day']);
+                    break;
+            }
+
+            // Spieler, die (noch) nicht in players stehen: Namen aus der
+            // Meldung selbst, damit playerName() im Frontend etwas findet.
+            if ($row['known_name'] === null && $row['last_name'] === null) {
+                $row['known_name'] = pick($data, ['pn']);
+                $row['first_name'] = pick($data, ['fn']);
+                $row['last_name']  = pick($data, ['ln']);
+            }
+
+            $price = $row['price'] !== null ? (int) $row['price'] : null;
+            $mv    = $row['mv_at'] !== null ? (int) $row['mv_at'] : null;
+
+            $row['price']     = $price;
+            $row['mv_at']     = $mv;
+            $row['delta_pct'] = ($price !== null && $mv !== null && $mv > 0)
+                ? ($price - $mv) / $mv * 100 : null;
+
+            unset($row['raw']);
+            $out[] = $row;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Kennzahlen je Mitspieler ueber die erfassten Transfers.
+     *
+     * Der Auf- bzw. Abschlag ist dabei die eigentliche Aussage: wer
+     * regelmaessig deutlich ueber Marktwert kauft, treibt die Preise -
+     * und wer ueber Marktwert verkauft, verdient daran.
+     */
+    public function managerStats(array $feed)
+    {
+        $stats = [];
+
+        foreach ($feed as $row) {
+            if ($row['kind'] !== 'buy' && $row['kind'] !== 'sell') {
+                continue;
+            }
+            $name = $row['manager'];
+            if ($name === null || $name === '') {
+                continue;
+            }
+
+            if (!isset($stats[$name])) {
+                $stats[$name] = [
+                    'manager'      => $name,
+                    'buys'         => 0, 'buy_volume'  => 0, 'buy_premium'  => [],
+                    'sells'        => 0, 'sell_volume' => 0, 'sell_premium' => [],
+                ];
+            }
+
+            $key = $row['kind'] === 'buy' ? 'buy' : 'sell';
+            $stats[$name][$key . 's']++;
+            $stats[$name][$key . '_volume'] += (int) $row['price'];
+            if ($row['delta_pct'] !== null) {
+                $stats[$name][$key . '_premium'][] = $row['delta_pct'];
+            }
+        }
+
+        foreach ($stats as &$s) {
+            $s['transfers'] = $s['buys'] + $s['sells'];
+            // Kassensaldo, nicht Gewinn: was ein noch nicht verkaufter
+            // Spieler wert ist, steht hier bewusst nicht drin.
+            $s['net']           = $s['sell_volume'] - $s['buy_volume'];
+            $s['buy_premium']   = $s['buy_premium']
+                ? array_sum($s['buy_premium']) / count($s['buy_premium']) : null;
+            $s['sell_premium']  = $s['sell_premium']
+                ? array_sum($s['sell_premium']) / count($s['sell_premium']) : null;
+        }
+        unset($s);
+
+        uasort($stats, function ($a, $b) {
+            return $b['transfers'] - $a['transfers'];
+        });
+
+        return array_values($stats);
+    }
+
+    /**
+     * Spieler, die derselbe Manager im erfassten Zeitraum gekauft und wieder
+     * verkauft hat.
+     *
+     * Zur Einordnung wichtig: Kaeufe vor dem Zeitraum sind nicht bekannt.
+     * Ein Verkauf ohne passenden Kauf faellt deshalb heraus, statt mit
+     * einem geratenen Einstandspreis als Fund zu gelten.
+     */
+    public function quickFlips(array $feed)
+    {
+        // Der Feed kommt absteigend - fuer die Paarung chronologisch lesen.
+        $chron = array_reverse($feed);
+
+        $open  = [];
+        $flips = [];
+
+        foreach ($chron as $row) {
+            if ($row['manager'] === null || $row['player_id'] === null || $row['price'] === null) {
+                continue;
+            }
+            $key = $row['manager'] . '|' . $row['player_id'];
+
+            if ($row['kind'] === 'buy') {
+                $open[$key][] = $row;
+            } elseif ($row['kind'] === 'sell' && !empty($open[$key])) {
+                $buy = array_shift($open[$key]);
+                $flips[] = [
+                    'manager'    => $row['manager'],
+                    'player_id'  => $row['player_id'],
+                    'known_name' => $row['known_name'],
+                    'first_name' => $row['first_name'],
+                    'last_name'  => $row['last_name'],
+                    'position'   => $row['position'],
+                    'image'      => $row['image'],
+                    'bought_at'  => $buy['happened_at'],
+                    'sold_at'    => $row['happened_at'],
+                    'buy_price'  => (int) $buy['price'],
+                    'sell_price' => (int) $row['price'],
+                    'profit'     => (int) $row['price'] - (int) $buy['price'],
+                    'hours'      => (strtotime($row['happened_at']) - strtotime($buy['happened_at'])) / 3600,
+                ];
+            }
+        }
+
+        usort($flips, function ($a, $b) {
+            return $b['profit'] - $a['profit'];
+        });
+
+        return $flips;
+    }
+
     // ---------------------------------------------------------------- Status
 
     public function status()

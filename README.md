@@ -118,7 +118,7 @@ Hintergrundprozess gestartet wird.
 
 | Befehl | Zweck | Dauer |
 |---|---|---|
-| `php bin/sync.php --market` | nur Transfermarkt und eigener Kader | ~5 s |
+| `php bin/sync.php --market` | Transfermarkt, eigener Kader, Liga-Aktivitäten | ~5 s |
 | `php bin/sync.php --perf` | Spieltags-Punkte des eigenen Kaders, Team-Kürzel | ~7 s |
 | `php bin/sync.php --agg-only` | Saison-Aggregate (Punkte, Einsätze, Spielzeit) | ~0,7 s je Spieler |
 | `php bin/sync.php` | Standardlauf: alle Spieler, 60 Marktwert-Historien, 60 Aggregate | ~1,5 min |
@@ -172,6 +172,7 @@ public/lineup-save.php speichert die Planung (POST)
 public/radar.php      erwartete Marktwert-Entwicklung
 public/accuracy.php   Prognose gegen die Wirklichkeit
 public/market.php     Transfermarkt mit Bewertung
+public/activity.php   Liga-Aktivitäten: Transfers der Mitspieler
 public/trends.php     Gewinner, Verlierer, Punkte pro Million
 public/compare.php    Spielervergleich
 public/player.php     Spielerdetail mit Marktwert-Chart
@@ -192,6 +193,39 @@ aktuell verfügbaren Angebote, kein absolutes Urteil:
 Verletzte und gesperrte Spieler werden halbiert. Was der Score bewusst *nicht*
 kennt: Aufstellungssituation, Gegnerstärke, Wechselgerüchte. Diese Angaben
 stehen auf der Spielerseite und gehören in die eigene Einschätzung.
+
+## Liga-Aktivitäten
+
+Die Seite **Liga** wertet den Aktivitäten-Feed aus: wer kauft und verkauft,
+zu welchem Preis, und wie der sich zum Marktwert desselben Tages verhält.
+
+Kickbase liefert diese Einträge **unbeschriftet** – jeder trägt nur eine
+Typ-Nummer, keine Erklärung. Was die Nummern bedeuten, ist aus den eigenen
+Daten abgeleitet und dort nachprüfbar:
+
+| Typ | Bedeutung | Woran das hängt |
+|---|---|---|
+| 15 | Transfer | `data.t` = 1 Kauf mit `byr` (Käufer), = 2 Verkauf mit `slr` (Verkäufer). Gilt ausnahmslos für alle erfassten Zeilen. |
+| 3 | Kickbase stellt einen Spieler auf den Markt | 34 von 34 dieser Meldungen tauchten danach als Angebot auf, alle mit Kickbase als Verkäufer – und die Angebote von Mitspielern hatten nie eine solche Meldung davor. |
+| 22 | Tagesbonus | `data.bn` = Betrag, `data.day` = Spieltag |
+
+Die interessanteste Spalte ist der **Aufschlag**: der gezahlte Preis
+gegenüber dem Marktwert am selben Tag. Wer regelmäßig weit über Marktwert
+kauft, treibt die Preise – und das sieht man hier je Mitspieler.
+
+Zwei Grenzen, die die Seite auch selbst nennt:
+
+* Der Feed reicht nur so weit zurück, wie synchronisiert wurde. Kickbase gibt
+  nur die jüngsten Einträge heraus, ältere sind nur da, wenn damals schon ein
+  Sync lief. Deshalb läuft `syncActivities()` bei **jedem** `--market` mit und
+  nicht nur im vollen Lauf.
+* Bei „gekauft und wieder verkauft" zählen nur Paare, die beide im Zeitraum
+  liegen. Ein Verkauf ohne bekannten Kauf fällt heraus, statt mit einem
+  geratenen Einstandspreis als Fund zu gelten.
+
+Der Saldo je Manager ist reine Kassenrechnung (Verkäufe minus Käufe). Was ein
+noch nicht verkaufter Spieler wert ist, steht bewusst nicht darin – dafür
+fehlen die Kaderdaten der Mitspieler.
 
 ## Zur Prognose auf der Aufstellungsseite
 
