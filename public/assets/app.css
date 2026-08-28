@@ -267,6 +267,11 @@ td a:hover { color: var(--accent); text-decoration: underline; }
     font-variant-numeric: tabular-nums;
 }
 
+/* Die eigene Zeile in der Ligatabelle hervorheben. */
+tr.own td {
+    background: var(--panel-2);
+}
+
 /* Spielplan: drei Ausgaenge nebeneinander statt eines Fortschrittsbalkens.
    Die Segmente liegen im Fluss, nicht uebereinander wie beim Score. */
 .scorebar.chance {

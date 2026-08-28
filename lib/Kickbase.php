@@ -504,6 +504,48 @@ class Kickbase
         return $out;
     }
 
+    /**
+     * Rangliste der Liga: alle Mitspieler mit Punkten und Platzierung.
+     *
+     * Achtung beim Teamwert: das hier gelieferte tv ist ein aelterer Stand
+     * und weicht ab, sobald jemand gehandelt hat. Der belastbare Teamwert
+     * ist die Summe der Marktwerte aus managerSquad().
+     */
+    public function leagueRanking($leagueId)
+    {
+        $res = $this->get('/v4/leagues/' . rawurlencode($leagueId) . '/ranking');
+
+        $out = [];
+        foreach (isset($res['us']) ? $res['us'] : [] as $user) {
+            $id = pick($user, ['i']);
+            if ($id === null) {
+                continue;
+            }
+            $out[] = [
+                'manager_id' => (string) $id,
+                'name'       => pick($user, ['n']),
+                'place'      => pickInt($user, ['spl']),
+                'points'     => pickInt($user, ['sp']),
+                'image'      => pick($user, ['uim']),
+            ];
+        }
+        return $out;
+    }
+
+    /**
+     * Kader eines Mitspielers. Das ist der Endpunkt, der die
+     * Konkurrenzanalyse ueberhaupt moeglich macht - er liefert dieselben
+     * Felder wie der eigene Kader, inklusive Marktwert und ob der Spieler
+     * gerade auf dem Transfermarkt steht.
+     */
+    public function managerSquad($leagueId, $managerId)
+    {
+        $res = $this->get(sprintf('/v4/leagues/%s/managers/%s/squad',
+            rawurlencode($leagueId), rawurlencode($managerId)));
+
+        return isset($res['it']) ? $res['it'] : [];
+    }
+
     /** Aktivitaeten der Liga (Kaeufe, Verkaeufe der Mitspieler). */
     public function activities($leagueId, $start = 0, $max = 25)
     {

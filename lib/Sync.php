@@ -621,6 +621,158 @@ class Sync
         return $frozen;
     }
 
+    // -------------------------------------------------------------- Mitspieler
+
+    /**
+     * Rangliste und Kader aller Mitspieler.
+     *
+     * Ein Request fuer die Rangliste, dann einer je Manager - bei einer
+     * Sechser-Liga also sieben. Deshalb laeuft das im Standardlauf mit und
+     * nicht im schnellen --market.
+     *
+     * Der Teamwert wird aus den Marktwerten selbst summiert. Das tv aus der
+     * Rangliste sieht danach aus, ist aber ein aelterer Stand: bei den drei
+     * Managern, die zuletzt gehandelt hatten, wich es um bis zu 7,5 Mio ab,
+     * bei den uebrigen um exakt null.
+     */
+    public function syncManagers($leagueId)
+    {
+        try {
+            $ranking = $this->kb->leagueRanking($leagueId);
+        } catch (Exception $ex) {
+            $this->log('Rangliste konnte nicht geladen werden: ' . $ex->getMessage());
+            return 0;
+        }
+
+        if (!$ranking) {
+            $this->log('Rangliste ist leer.');
+            return 0;
+        }
+
+        $now     = date('Y-m-d H:i:s');
+        $gesehen = [];
+        $count   = 0;
+
+        // Die eigene Manager-ID steht in keiner Antwort. Sie ergibt sich aus
+        // der Ueberschneidung mit dem eigenen Kader - wessen Aufgebot dieselben
+        // Spieler enthaelt wie squad_players, das sind wir.
+        $eigene   = array_flip(array_column($this->db->all(
+            'SELECT player_id FROM squad_players WHERE league_id = ?',
+            [(string) $leagueId]), 'player_id'));
+        $treffer  = [];
+
+        foreach ($ranking as $manager) {
+            $managerId = $manager['manager_id'];
+
+            try {
+                $squad = $this->kb->managerSquad($leagueId, $managerId);
+            } catch (Exception $ex) {
+                $this->log("Kader von {$manager['name']} fehlgeschlagen: " . $ex->getMessage());
+                continue;
+            }
+
+            $teamValue = 0;
+            $aufMarkt  = 0;
+            $treffer[$managerId] = 0;
+
+            foreach ($squad as $item) {
+                $playerId = pick($item, ['pi', 'i']);
+                if (!$playerId) {
+                    continue;
+                }
+                $playerId  = (string) $playerId;
+                $gesehen[] = $playerId;
+                if (isset($eigene[$playerId])) {
+                    $treffer[$managerId]++;
+                }
+
+                $mv = pickInt($item, ['mv']);
+                $teamValue += (int) $mv;
+                $onMarket = !empty($item['iotm']) ? 1 : 0;
+                $aufMarkt += $onMarket;
+
+                $this->db->upsert('manager_players', [
+                    'league_id'    => (string) $leagueId,
+                    'player_id'    => $playerId,
+                    'manager_id'   => $managerId,
+                    'market_value' => $mv,
+                    'mv_gain'      => pickInt($item, ['mvgl']),
+                    'day_change'   => pickInt($item, ['sdmvt']),
+                    'lineup_slot'  => pickInt($item, ['lo']),
+                    'on_market'    => $onMarket,
+                    'updated_at'   => $now,
+                ], ['manager_id', 'market_value', 'mv_gain', 'day_change',
+                    'lineup_slot', 'on_market', 'updated_at']);
+
+                // Stammdaten aus dem Kader mitnehmen - dieselben Felder wie
+                // beim eigenen Kader, nur fuer fremde Spieler.
+                $stamm = ['player_id' => $playerId, 'updated_at' => $now];
+                foreach ([['known_name', ['pn']], ['team_id', ['tid']], ['image', ['pim']]] as $map) {
+                    $wert = pick($item, $map[1]);
+                    if ($wert !== null) {
+                        $stamm[$map[0]] = $wert;
+                    }
+                }
+                foreach ([['position', ['pos']], ['status', ['st']], ['total_points', ['p']],
+                          ['avg_points', ['ap']], ['mv_trend', ['mvt']]] as $map) {
+                    $wert = pickInt($item, $map[1]);
+                    if ($wert !== null) {
+                        $stamm[$map[0]] = $wert;
+                    }
+                }
+                if ($mv !== null) {
+                    $stamm['market_value'] = $mv;
+                    $this->recordMarketValue($playerId, date('Y-m-d'), $mv);
+                }
+                $spalten = array_values(array_diff(array_keys($stamm), ['player_id']));
+                $this->db->upsert('players', $stamm, $spalten);
+            }
+
+            $this->db->upsert('managers', [
+                'league_id'  => (string) $leagueId,
+                'manager_id' => $managerId,
+                'name'       => $manager['name'],
+                'place'      => $manager['place'],
+                'points'     => $manager['points'],
+                'team_value' => $teamValue,
+                'squad_size' => count($squad),
+                'on_market'  => $aufMarkt,
+                'is_me'      => 0,
+                'image'      => $manager['image'],
+                'updated_at' => $now,
+            ], ['name', 'place', 'points', 'team_value', 'squad_size',
+                'on_market', 'image', 'updated_at']);
+            $count++;
+        }
+
+        // Erst jetzt steht fest, wessen Kader am besten passt. Ohne Treffer
+        // bleibt die Markierung, wie sie war - lieber keine Angabe als eine
+        // falsche.
+        arsort($treffer);
+        $ich = key($treffer);
+        if ($ich !== null && $treffer[$ich] > 0) {
+            $this->db->run('UPDATE managers SET is_me = 0 WHERE league_id = ?', [(string) $leagueId]);
+            $this->db->run('UPDATE managers SET is_me = 1 WHERE league_id = ? AND manager_id = ?',
+                [(string) $leagueId, (string) $ich]);
+        }
+
+        // Verkaufte Spieler gehoeren niemandem mehr. Ohne das blieben sie
+        // ewig beim alten Besitzer stehen und die Liste freier Spieler waere
+        // zu kurz.
+        if ($gesehen) {
+            $ph = implode(',', array_fill(0, count($gesehen), '?'));
+            $this->db->run(
+                "DELETE FROM manager_players
+                  WHERE league_id = ? AND player_id NOT IN ({$ph})",
+                array_merge([(string) $leagueId], $gesehen)
+            );
+        }
+
+        $this->db->setMeta('managers_synced_at', date('c'));
+        $this->log("Mitspieler: {$count} Manager, " . count($gesehen) . ' Spieler zugeordnet');
+        return $count;
+    }
+
     // ------------------------------------------------------------ Aktivitaeten
 
     public function syncActivities($leagueId, $max = 50)
@@ -681,6 +833,9 @@ class Sync
             }
             $this->syncSquad($leagueId);
             $this->syncMarket($leagueId);
+            // Ein Request je Mitspieler - zu viel fuer den schnellen
+            // --market-Lauf, im Standardlauf faellt es nicht auf.
+            $this->syncManagers($leagueId);
             $this->syncActivities($leagueId);
             $this->syncPerformances($leagueId);
             $this->syncPlayerAggregates($leagueId, $aggLimit);

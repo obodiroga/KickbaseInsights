@@ -134,7 +134,7 @@ Hintergrundprozess gestartet wird.
 | `php bin/sync.php --market` | Transfermarkt, Kader, Liga-Aktivitäten, Spielplan | ~5 s |
 | `php bin/sync.php --perf` | Spieltags-Punkte des eigenen Kaders, Team-Kürzel | ~7 s |
 | `php bin/sync.php --agg-only` | Saison-Aggregate (Punkte, Einsätze, Spielzeit) | ~0,7 s je Spieler |
-| `php bin/sync.php` | Standardlauf: alle Spieler, 60 Marktwert-Historien, 60 Aggregate | ~1,5 min |
+| `php bin/sync.php` | Standardlauf: alle Spieler, Mitspieler-Kader, 60 Marktwert-Historien, 60 Aggregate | ~1,5 min |
 | `php bin/sync.php --full` | alles: alle Marktwert-Historien und alle Saison-Aggregate | ab 20 min |
 | `php bin/test-api.php` | API-Verbindung prüfen, Rohdaten nach `var/dumps/` | ~10 s |
 
@@ -185,6 +185,7 @@ public/lineup-save.php speichert die Planung (POST)
 public/radar.php      erwartete Marktwert-Entwicklung
 public/accuracy.php   Prognose gegen die Wirklichkeit
 public/market.php     Transfermarkt mit Bewertung
+public/managers.php   Konkurrenz: Kader der Mitspieler, freie Spieler
 public/activity.php   Liga-Aktivitäten: Transfers der Mitspieler
 public/schedule.php   Spielplan mit Siegchancen und Gegner-Faktor
 public/trends.php     Gewinner, Verlierer, Punkte pro Million
@@ -207,6 +208,40 @@ aktuell verfügbaren Angebote, kein absolutes Urteil:
 Verletzte und gesperrte Spieler werden halbiert. Was der Score bewusst *nicht*
 kennt: Aufstellungssituation, Gegnerstärke, Wechselgerüchte. Diese Angaben
 stehen auf der Spielerseite und gehören in die eigene Einschätzung.
+
+## Konkurrenzanalyse
+
+Die Seite **Konkurrenz** holt, was der eigenen Auswertung am meisten
+gefehlt hat: den Kader jedes Mitspielers. Ein Request für die Rangliste,
+dann einer je Manager – bei sechs Mitspielern also sieben. Das läuft im
+Standardlauf mit, nicht im schnellen `--market`.
+
+Der eigentliche Ertrag ist nicht die Tabelle, sondern die Umkehrung:
+**welche guten Spieler gehören noch niemandem.** In Kickbase gehört ein
+Spieler je Liga höchstens einem Manager – was in der Liste „Noch frei"
+steht, ist tatsächlich zu haben, sobald es auf dem Markt erscheint. Diese
+Regel steht auch in der Datenbank: `manager_players` hat den
+Primärschlüssel `(league_id, player_id)`, nicht `(…, manager_id, …)`.
+
+Zwei Dinge, die die Seite bewusst **nicht** behauptet:
+
+* **Kein Budget.** Die API gibt den Kontostand nur für den eigenen
+  Account heraus. Naheliegend wäre, ihn aus `ranking.tv` minus Kaderwert
+  abzuleiten – das ist geprüft und falsch: `ranking.tv` ist schlicht ein
+  älterer Stand und weicht genau bei den Managern ab, die zuletzt
+  gehandelt haben. Beim eigenen Account ist die Differenz null, obwohl
+  Budget vorhanden ist. Damit ist die Hypothese widerlegt, und es steht
+  hier kein geschätzter Kontostand.
+* **Kein „Max-Gebot".** Folgt direkt aus dem fehlenden Budget.
+
+Der Teamwert wird aus den Marktwerten selbst summiert statt aus
+`ranking.tv` übernommen – aus demselben Grund. Gegengeprüft: für den
+eigenen Account stimmt die Summe auf den Euro mit dem bekannten Teamwert
+überein.
+
+Die eigene Manager-ID steht in keiner Antwort. Sie wird über die
+Überschneidung mit dem eigenen Kader bestimmt – wessen Aufgebot dieselben
+Spieler enthält wie `squad_players`, das sind wir.
 
 ## Liga-Aktivitäten
 

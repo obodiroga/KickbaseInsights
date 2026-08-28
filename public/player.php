@@ -47,8 +47,27 @@ $listing = $leagueId ? $db->one(
     [$leagueId, $playerId]
 ) : null;
 
+// Und gehoert er schon jemandem in der Liga?
+$owner = $leagueId ? $analyse->ownerOf($leagueId, $playerId) : null;
+
 renderHeader($name, '', $status);
 ?>
+
+<?php if ($owner): ?>
+    <div class="card notice">
+        <p>
+            Gehört <strong><?= e($owner['name'] ?: $owner['manager_id']) ?></strong><?php
+            if ($owner['is_me']) { echo ' – also dir'; } ?>.
+            <?php if ($owner['on_market']): ?>
+                <span class="badge">steht auf dem Markt</span>
+            <?php endif; ?>
+        </p>
+    </div>
+<?php elseif ($leagueId && $db->value('SELECT COUNT(*) FROM manager_players WHERE league_id = ?', [$leagueId])): ?>
+    <div class="card notice">
+        <p class="muted">Gehört in dieser Liga niemandem – zu haben, sobald er auf dem Markt erscheint.</p>
+    </div>
+<?php endif; ?>
 
 <div class="stats">
     <div class="stat">

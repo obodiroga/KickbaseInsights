@@ -1518,6 +1518,150 @@ class Analyse
         return $out;
     }
 
+    // -------------------------------------------------------------- Mitspieler
+
+    /**
+     * Die Mitspieler mit Kennzahlen, bester Platz zuerst.
+     *
+     * Der Teamwert ist die Summe der Kader-Marktwerte. Was jemand an Budget
+     * auf dem Konto hat, steht hier bewusst NICHT: die API gibt das nur
+     * fuer den eigenen Account heraus. Alles andere waere geschaetzt.
+     */
+    public function managers($leagueId)
+    {
+        $rows = $this->db->all(
+            'SELECT m.*,
+                    (SELECT SUM(mp.day_change) FROM manager_players mp
+                      WHERE mp.league_id = m.league_id AND mp.manager_id = m.manager_id) AS day_change
+             FROM managers m
+             WHERE m.league_id = ?
+             ORDER BY m.place ASC, m.points DESC',
+            [(string) $leagueId]
+        );
+
+        if (!$rows) {
+            return [];
+        }
+
+        $summe = 0;
+        foreach ($rows as $row) {
+            $summe += (int) $row['team_value'];
+        }
+        $schnitt = $summe / count($rows);
+
+        foreach ($rows as &$row) {
+            $row['team_value'] = (int) $row['team_value'];
+            $row['day_change'] = $row['day_change'] !== null ? (int) $row['day_change'] : null;
+            // Abstand zum Ligadurchschnitt - sagt mehr als die nackte Summe.
+            $row['vs_average'] = $schnitt > 0 ? ($row['team_value'] - $schnitt) / $schnitt * 100 : null;
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /** Kader eines Mitspielers, wertvollster Spieler zuerst. */
+    public function managerSquad($leagueId, $managerId)
+    {
+        return $this->db->all(
+            'SELECT mp.*, p.known_name, p.first_name, p.last_name, p.team_id,
+                    p.position, p.status, p.avg_points, p.total_points, p.image
+             FROM manager_players mp
+             LEFT JOIN players p ON p.player_id = mp.player_id
+             WHERE mp.league_id = ? AND mp.manager_id = ?
+             ORDER BY mp.market_value DESC',
+            [(string) $leagueId, (string) $managerId]
+        );
+    }
+
+    /**
+     * Spieler, die in dieser Liga niemandem gehoeren.
+     *
+     * In Kickbase gehoert ein Spieler hoechstens einem Manager - was hier
+     * auftaucht, ist also tatsaechlich zu haben, sobald es auf dem Markt
+     * erscheint. Das ist die eigentliche Ausbeute der Konkurrenzanalyse:
+     * nicht "wer ist gut", sondern "was ist ueberhaupt noch frei".
+     *
+     * Ohne bekannte Einsatzzahl faellt ein Spieler heraus - dieselbe Regel
+     * wie in valueRanking(), sonst stehen Eintagsfliegen oben.
+     */
+    public function freeAgents($leagueId, $limit = 40, $minMatches = 3)
+    {
+        $rows = $this->db->all(
+            'SELECT p.player_id, p.known_name, p.first_name, p.last_name, p.team_id,
+                    p.position, p.status, p.market_value, p.avg_points, p.total_points,
+                    p.matches, p.image
+             FROM players p
+             LEFT JOIN manager_players mp
+                    ON mp.player_id = p.player_id AND mp.league_id = ?
+             WHERE mp.player_id IS NULL
+               AND p.market_value IS NOT NULL
+               AND p.matches IS NOT NULL AND p.matches >= ?
+               AND p.avg_points IS NOT NULL
+             ORDER BY p.avg_points DESC
+             LIMIT ' . (int) $limit,
+            [(string) $leagueId, (int) $minMatches]
+        );
+
+        foreach ($rows as &$row) {
+            $mv = (int) $row['market_value'];
+            $row['ppm'] = $mv > 0 && $row['avg_points'] !== null
+                ? $row['avg_points'] / ($mv / 1000000) : null;
+        }
+        unset($row);
+
+        return $rows;
+    }
+
+    /**
+     * Wem gehoert ein Spieler? Gibt null zurueck, wenn niemandem - oder
+     * wenn die Mitspieler-Daten noch nicht geholt wurden.
+     */
+    public function ownerOf($leagueId, $playerId)
+    {
+        return $this->db->one(
+            'SELECT mp.manager_id, mp.on_market, mp.lineup_slot, m.name, m.is_me
+             FROM manager_players mp
+             LEFT JOIN managers m
+                    ON m.league_id = mp.league_id AND m.manager_id = mp.manager_id
+             WHERE mp.league_id = ? AND mp.player_id = ?',
+            [(string) $leagueId, (string) $playerId]
+        );
+    }
+
+    /**
+     * Wie viel Kaderwert steckt bei den Mitspielern in welchem Verein?
+     *
+     * Zeigt Klumpenrisiko: wer sein halbes Team aus einem Verein hat,
+     * haengt an dessen Spielplan.
+     */
+    public function managerTeamSpread($leagueId)
+    {
+        $rows = $this->db->all(
+            'SELECT mp.manager_id, p.team_id, COUNT(*) AS n, SUM(mp.market_value) AS wert
+             FROM manager_players mp
+             LEFT JOIN players p ON p.player_id = mp.player_id
+             WHERE mp.league_id = ? AND p.team_id IS NOT NULL
+             GROUP BY mp.manager_id, p.team_id',
+            [(string) $leagueId]
+        );
+
+        $out = [];
+        foreach ($rows as $row) {
+            $out[$row['manager_id']][] = [
+                'team_id' => $row['team_id'],
+                'n'       => (int) $row['n'],
+                'wert'    => (int) $row['wert'],
+            ];
+        }
+        foreach ($out as &$liste) {
+            usort($liste, function ($a, $b) { return $b['wert'] - $a['wert']; });
+        }
+        unset($liste);
+
+        return $out;
+    }
+
     // -------------------------------------------------------- Liga-Aktivitaeten
 
     /**

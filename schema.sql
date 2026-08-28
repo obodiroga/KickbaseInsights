@@ -177,6 +177,46 @@ CREATE TABLE IF NOT EXISTS forecast_log (
     KEY idx_fc_day (season_id, day)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Die Mitspieler der Liga.
+CREATE TABLE IF NOT EXISTS managers (
+    league_id   VARCHAR(16)  NOT NULL,
+    manager_id  VARCHAR(32)  NOT NULL,
+    name        VARCHAR(100) NULL,
+    place       SMALLINT     NULL,
+    points      INT          NULL,
+    -- Summe der Kader-Marktwerte. Bewusst selbst gerechnet: das tv aus der
+    -- Rangliste ist ein aelterer Stand und weicht ab, sobald jemand handelt.
+    team_value  BIGINT       NULL,
+    squad_size  SMALLINT     NULL,
+    on_market   SMALLINT     NULL,   -- wie viele davon gerade angeboten sind
+    is_me       TINYINT      NOT NULL DEFAULT 0,
+    image       VARCHAR(255) NULL,
+    updated_at  DATETIME     NOT NULL,
+    PRIMARY KEY (league_id, manager_id),
+    KEY idx_mgr_place (league_id, place)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Wer besitzt welchen Spieler.
+--
+-- Der Primaerschluessel ist (league_id, player_id), nicht (league_id,
+-- manager_id, player_id): ein Spieler gehoert je Liga hoechstens einem
+-- Manager. Diese Spielregel steht damit in der Datenbank und nicht nur in
+-- der Anwendung - ein Wechsel aktualisiert die Zeile, statt eine zweite
+-- anzulegen.
+CREATE TABLE IF NOT EXISTS manager_players (
+    league_id    VARCHAR(16) NOT NULL,
+    manager_id   VARCHAR(32) NOT NULL,
+    player_id    VARCHAR(16) NOT NULL,
+    market_value BIGINT      NULL,
+    mv_gain      BIGINT      NULL,   -- Gewinn seit Kauf (mvgl)
+    day_change   BIGINT      NULL,   -- Veraenderung seit gestern (sdmvt)
+    lineup_slot  SMALLINT    NULL,
+    on_market    TINYINT     NOT NULL DEFAULT 0,
+    updated_at   DATETIME    NOT NULL,
+    PRIMARY KEY (league_id, player_id),
+    KEY idx_mp_manager (league_id, manager_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Spielplan des Wettbewerbs, ein Eintrag je Partie.
 --
 -- Der Grund, warum das eine eigene Tabelle ist und nicht nur ein Abruf bei

@@ -9,6 +9,7 @@ function renderHeader($title, $active = '', array $status = null)
         'index'   => ['Dashboard', 'index.php'],
         'lineup'  => ['Aufstellung', 'lineup.php'],
         'market'  => ['Transfermarkt', 'market.php'],
+        'managers' => ['Konkurrenz', 'managers.php'],
         'activity' => ['Liga', 'activity.php'],
         'schedule' => ['Spielplan', 'schedule.php'],
         'trends'  => ['Trends', 'trends.php'],
