@@ -110,8 +110,8 @@ class Sync
     }
 
     /**
-     * Vereins-IDs. Kommen aus dem Spielplan, den syncTeams als Kuerzel-Liste
-     * in meta ablegt - deshalb laeuft syncTeams vorher.
+     * Vereins-IDs. Kommen aus dem Spielplan, den syncSchedule als Kuerzel-Liste
+     * in meta ablegt - deshalb laeuft syncSchedule vorher.
      */
     private function knownTeamIds($competitionId)
     {
@@ -121,7 +121,7 @@ class Sync
         }
 
         // Noch nichts gespeichert: Spielplan direkt auswerten.
-        $this->syncTeams($competitionId);
+        $this->syncSchedule($competitionId);
         $shorts = json_decode((string) $this->db->getMeta('team_shorts'), true);
         return is_array($shorts) ? array_keys($shorts) : [];
     }
@@ -469,39 +469,86 @@ class Sync
         return $done;
     }
 
-    // ------------------------------------------------------------------ Teams
+    // -------------------------------------------------------- Spielplan, Teams
 
     /**
-     * Team-Kuerzel (ID -> "FCB") aus dem Spielplan. Ein Request, landet als
-     * JSON in meta - fuer eine Handvoll Kuerzel braucht es keine Tabelle.
+     * Spielplan des Wettbewerbs. Ein Request, zwei Ergebnisse: die Partien
+     * landen in matches, die Team-Kuerzel (ID -> "FCB") als JSON in meta -
+     * fuer eine Handvoll Kuerzel braucht es keine eigene Tabelle.
+     *
+     * Entscheidend ist die Art des Schreibens: Quoten und Tore werden nur
+     * gesetzt, wenn die Antwort welche mitbringt. Kickbase liefert die
+     * Quoten nur fuer die naechsten beiden Spieltage - ein stumpfes
+     * Ueberschreiben wuerde das Archiv bei jedem Lauf wieder leeren.
      */
-    public function syncTeams($competitionId = '1')
+    public function syncSchedule($competitionId = '1')
     {
         try {
-            $res = $this->kb->matchdays($competitionId);
+            $matches = $this->kb->schedule($competitionId);
         } catch (Exception $ex) {
             $this->log('Spielplan konnte nicht geladen werden: ' . $ex->getMessage());
             return 0;
         }
 
-        $shorts = [];
-        foreach (isset($res['it']) ? $res['it'] : [] as $matchday) {
-            foreach (isset($matchday['it']) ? $matchday['it'] : [] as $match) {
-                foreach ([['t1', 't1sy'], ['t2', 't2sy']] as $pair) {
-                    $id    = pick($match, [$pair[0]]);
-                    $short = pick($match, [$pair[1]]);
-                    if ($id !== null && $short) {
-                        $shorts[(string) $id] = (string) $short;
-                    }
+        $now      = date('Y-m-d H:i:s');
+        $shorts   = [];
+        $mitQuote = 0;
+
+        foreach ($matches as $match) {
+            foreach ([['team_home', 'home_short'], ['team_away', 'away_short']] as $pair) {
+                if ($match[$pair[0]] !== '' && $match[$pair[1]]) {
+                    $shorts[$match[$pair[0]]] = $match[$pair[1]];
                 }
             }
+
+            $hatQuote = $match['odds_home'] !== null;
+            if ($hatQuote) {
+                $mitQuote++;
+            }
+
+            $this->db->run(
+                'INSERT INTO matches
+                   (match_id, competition_id, day, kickoff, team_home, team_away,
+                    home_short, away_short, goals_home, goals_away, state,
+                    odds_home, odds_draw, odds_away, odds_seen_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                    day          = VALUES(day),
+                    state        = VALUES(state),
+                    -- Anstoss und Teams sind der Schluessel, ueber den die
+                    -- Prognose die archivierten Quoten wiederfindet. Eine
+                    -- unvollstaendige Antwort darf ihn nicht ausleeren -
+                    -- sonst ist die Quote formal da und praktisch verloren.
+                    kickoff      = COALESCE(VALUES(kickoff),    kickoff),
+                    team_home    = COALESCE(NULLIF(VALUES(team_home),  \'\'), team_home),
+                    team_away    = COALESCE(NULLIF(VALUES(team_away),  \'\'), team_away),
+                    home_short   = COALESCE(NULLIF(VALUES(home_short), \'\'), home_short),
+                    away_short   = COALESCE(NULLIF(VALUES(away_short), \'\'), away_short),
+                    goals_home   = COALESCE(VALUES(goals_home),   goals_home),
+                    goals_away   = COALESCE(VALUES(goals_away),   goals_away),
+                    odds_home    = COALESCE(VALUES(odds_home),    odds_home),
+                    odds_draw    = COALESCE(VALUES(odds_draw),    odds_draw),
+                    odds_away    = COALESCE(VALUES(odds_away),    odds_away),
+                    odds_seen_at = COALESCE(VALUES(odds_seen_at), odds_seen_at),
+                    updated_at   = VALUES(updated_at)',
+                [
+                    $match['match_id'], (string) $competitionId, (int) $match['day'],
+                    $match['kickoff'], $match['team_home'], $match['team_away'],
+                    $match['home_short'], $match['away_short'],
+                    $match['goals_home'], $match['goals_away'], $match['state'],
+                    $match['odds_home'], $match['odds_draw'], $match['odds_away'],
+                    $hatQuote ? $now : null, $now,
+                ]
+            );
         }
 
         if ($shorts) {
             $this->db->setMeta('team_shorts', $shorts);
         }
-        $this->log('Team-Kuerzel: ' . count($shorts));
-        return count($shorts);
+
+        $this->log('Spielplan: ' . count($matches) . ' Partien, ' . $mitQuote
+            . ' mit Quote, ' . count($shorts) . ' Team-Kuerzel');
+        return count($matches);
     }
 
     // ------------------------------------------------------- Punkte je Spieltag
@@ -626,8 +673,8 @@ class Sync
         try {
             $competitionId = $this->config['kickbase']['competition_id'];
 
-            // Zuerst die Vereine: syncPlayers braucht deren IDs.
-            $this->syncTeams($competitionId);
+            // Zuerst der Spielplan: syncPlayers braucht die Vereins-IDs daraus.
+            $this->syncSchedule($competitionId);
             if ($withPlayers) {
                 $this->syncPlayers($competitionId);
                 $this->syncTopPlayers($competitionId);
@@ -662,6 +709,9 @@ class Sync
             // nur die juengsten Eintraege heraus. Liefe das nur im vollen
             // Sync mit, haette der Feed nach jedem laengeren Abstand Loecher.
             $this->syncActivities($leagueId);
+            // Ebenfalls ein Request, aus demselben Grund: die Wettquoten
+            // stehen nur fuer die naechsten beiden Spieltage bereit.
+            $this->syncSchedule($this->config['kickbase']['competition_id']);
             // Billig und rein lokal - haelt das Protokoll auch bei kurzen
             // Laeufen auf dem letzten Stand.
             $this->logForecasts($leagueId);

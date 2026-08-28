@@ -190,6 +190,7 @@ function verdict($mae, $baseline)
                 <th class="num">Minuten</th>
                 <th class="num">Basis</th>
                 <th class="num">Einsatzquote</th>
+                <th class="num">Gegner</th>
                 <th class="num">Fehler</th>
             </tr>
             </thead>
@@ -206,6 +207,8 @@ function verdict($mae, $baseline)
                     <td class="num"><?= $row['actual_minutes'] !== null ? (int) $row['actual_minutes'] : '–' ?></td>
                     <td class="num"><?= mae($row['base']) ?></td>
                     <td class="num"><?= $row['start_rate'] !== null ? round($row['start_rate'] * 100) . '%' : '–' ?></td>
+                    <td class="num"><?= isset($row['opponent']) && $row['opponent'] !== null
+                        ? '×' . number_format($row['opponent'], 2, ',', '.') : '–' ?></td>
                     <td class="num warn"><?= mae($row['fehler']) ?></td>
                 </tr>
             <?php endforeach; ?>

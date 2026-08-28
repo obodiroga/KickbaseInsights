@@ -10,6 +10,9 @@ class Analyse
 {
     private $db;
 
+    /** nextMatches() wird je Seitenaufruf mehrfach gebraucht - einmal reicht. */
+    private $nextMatchCache = null;
+
     public function __construct(Db $db)
     {
         $this->db = $db;
@@ -387,18 +390,23 @@ class Analyse
     /**
      * Erwartete Punkte je Spieler, aus den Spieltagsdaten.
      *
-     * Drei Bausteine, absichtlich einfach und ablesbar:
+     * Vier Bausteine, absichtlich einfach und ablesbar:
      *   Basis       Punkte je Einsatz - 60 % die letzten fuenf Einsaetze
      *               (Form), 40 % der Schnitt aller gespeicherten Einsaetze
      *   Einsatzquote Letzte zehn Spieltage: ein Spiel ueber 60 Minuten zaehlt
      *               voll, ein Kurzeinsatz 0,4 - das Rotationsrisiko
      *   Verfuegbar  0 bei verletzt, gesperrt oder abwesend
+     *   Gegner      Erwarteter Punkte-Faktor aus den Siegchancen des
+     *               naechsten Spiels, siehe opponentFactor(). Fehlt die
+     *               Quote, ist der Faktor 1 und die Rechnung die alte.
      *
-     * Was hier bewusst NICHT einfliesst: Gegnerstaerke, Heimvorteil,
-     * Wechselgeruechte. Dafuer fehlen die Daten. Und die Punkte koennen aus
-     * einem anderen Wettbewerb stammen (die API liefert auch Zweitliga-
-     * Saisons) - deshalb wird der Wettbewerb mitgegeben, statt ihn zu
-     * verschweigen.
+     * Der Gegner-Faktor deckt Gegnerstaerke und Heimvorteil zusammen ab -
+     * beides steckt bereits in der Quote. Was weiterhin NICHT einfliesst:
+     * Wechselgeruechte und die voraussichtliche Vereinsaufstellung.
+     *
+     * Die Punkte koennen aus einem anderen Wettbewerb stammen (die API
+     * liefert auch Zweitliga-Saisons) - deshalb wird der Wettbewerb
+     * mitgegeben, statt ihn zu verschweigen.
      *
      * @param array $playerIds
      * @return array [player_id => array]
@@ -437,24 +445,30 @@ class Analyse
             $meta[$row['player_id']] = $row;
         }
 
+        // Gegner-Faktor des naechsten Spiels. Fehlt er (keine Quote, kein
+        // angesetztes Spiel), rechnet buildForecast wie bisher weiter.
+        $next = $this->nextMatches();
+
         foreach ($playerIds as $pid) {
             $games  = isset($byPlayer[$pid]) ? $byPlayer[$pid] : [];
             $status = isset($meta[$pid]) ? (int) $meta[$pid]['status'] : 0;
             $out[$pid] = $this->buildForecast($games, $status,
-                isset($meta[$pid]) ? $meta[$pid]['avg_points'] : null);
+                isset($meta[$pid]) ? $meta[$pid]['avg_points'] : null,
+                isset($next[$pid]) ? $next[$pid]['factor'] : null);
         }
 
         return $out;
     }
 
     /** Rechnet eine einzelne Prognose. Siehe forecasts() fuer die Bausteine. */
-    private function buildForecast(array $games, $status, $avgPoints)
+    private function buildForecast(array $games, $status, $avgPoints, $opponent = null)
     {
         $result = [
             'points'       => null,
             'base'         => null,
             'start_rate'   => null,
             'availability' => $this->availability($status),
+            'opponent'     => $opponent,
             'source'       => 'keine',
             'appearances'  => 0,
             'starts'       => 0,
@@ -523,7 +537,9 @@ class Analyse
         }
 
         $rate = $result['start_rate'] !== null ? $result['start_rate'] : 1.0;
-        $result['points'] = $result['base'] * $rate * $result['availability'];
+        // Ohne bekannten Gegner-Faktor bleibt die Rechnung die alte.
+        $gegner = $opponent !== null ? (float) $opponent : 1.0;
+        $result['points'] = $result['base'] * $rate * $result['availability'] * $gegner;
 
         if ($result['start_rate'] === null) {
             $result['note'] = 'Einsatzquote unbekannt';
@@ -706,30 +722,354 @@ class Analyse
      */
     public function nextMatches()
     {
+        if ($this->nextMatchCache !== null) {
+            return $this->nextMatchCache;
+        }
+
+        // Der Join auf matches holt die Wettquoten dazu. Er laeuft ueber
+        // Spieltag UND Anstosstag, damit eine gleiche Paarung aus einer
+        // anderen Saison nicht faelschlich trifft.
         $rows = $this->db->all(
-            "SELECT pf.player_id, pf.day, pf.match_date, pf.team_home, pf.team_away, p.team_id
+            "SELECT pf.player_id, pf.day, pf.match_date, pf.team_home, pf.team_away, p.team_id,
+                    m.match_id, m.odds_home, m.odds_draw, m.odds_away
              FROM player_performances pf
              JOIN players p ON p.player_id = pf.player_id
+             LEFT JOIN matches m
+                    ON m.day = pf.day
+                   AND m.team_home = pf.team_home
+                   AND m.team_away = pf.team_away
+                   AND DATE(m.kickoff) = DATE(pf.match_date)
              WHERE pf.match_state = 0 AND pf.match_date IS NOT NULL
                AND pf.match_date >= NOW() AND p.team_id IS NOT NULL
              ORDER BY pf.match_date ASC"
         );
 
-        $out = [];
+        $factors = $this->outcomeFactors();
+        $mix     = $this->teamOutcomeMix();
+        $out     = [];
+
         foreach ($rows as $row) {
             $pid = $row['player_id'];
             if (isset($out[$pid])) {
                 continue;   // das erste ist das naechste
             }
             $home = $row['team_home'] === $row['team_id'];
+
+            $probs = self::oddsToProbabilities(
+                $row['odds_home'], $row['odds_draw'], $row['odds_away']);
+
+            // Aus Sicht des eigenen Teams drehen: fuer den Auswaertsspieler
+            // ist die Auswaertsquote die Siegquote.
+            $eigen = null;
+            if ($probs !== null) {
+                $eigen = $home
+                    ? ['win' => $probs['home'], 'draw' => $probs['draw'], 'loss' => $probs['away']]
+                    : ['win' => $probs['away'], 'draw' => $probs['draw'], 'loss' => $probs['home']];
+            }
+
+            // Absoluter Spielfaktor, dann relativ zum gewohnten Niveau des
+            // Teams - sonst zaehlte die Teamstaerke doppelt.
+            $absolut = $eigen !== null ? $this->opponentFactor($eigen, $factors) : null;
+            $gewohnt = isset($mix[$row['team_id']]) ? $mix[$row['team_id']]['factor'] : null;
+
             $out[$pid] = [
-                'day'      => (int) $row['day'],
-                'date'     => $row['match_date'],
-                'opponent' => $home ? $row['team_away'] : $row['team_home'],
-                'home'     => $home,
+                'day'          => (int) $row['day'],
+                'date'         => $row['match_date'],
+                'opponent'     => $home ? $row['team_away'] : $row['team_home'],
+                'home'         => $home,
+                'chances'      => $eigen,
+                'factor_abs'   => $absolut,
+                'team_usual'   => $gewohnt,
+                'factor'       => $this->relativeFactor($absolut, $gewohnt),
             ];
         }
+
+        $this->nextMatchCache = $out;
         return $out;
+    }
+
+    /**
+     * Dezimalquoten in Wahrscheinlichkeiten, die sich zu 1 summieren.
+     *
+     * Die Kehrwerte der drei Quoten ergeben zusammen mehr als 100 Prozent -
+     * die Differenz ist die Marge des Buchmachers (hier rund 7 Prozent).
+     * Ohne diese Normierung waere jede abgeleitete Zahl zu hoch.
+     *
+     * @return array|null ['home','draw','away'] als Anteil zwischen 0 und 1
+     */
+    public static function oddsToProbabilities($home, $draw, $away)
+    {
+        $home = (float) $home;
+        $draw = (float) $draw;
+        $away = (float) $away;
+
+        if ($home <= 0 || $draw <= 0 || $away <= 0) {
+            return null;
+        }
+
+        $inv   = [1 / $home, 1 / $draw, 1 / $away];
+        $summe = array_sum($inv);
+        if ($summe <= 0) {
+            return null;
+        }
+
+        return [
+            'home' => $inv[0] / $summe,
+            'draw' => $inv[1] / $summe,
+            'away' => $inv[2] / $summe,
+        ];
+    }
+
+    /**
+     * Wie stark haengen Kickbase-Punkte am Spielausgang?
+     *
+     * Nicht angenommen, sondern an den eigenen Spieltagsdaten gemessen:
+     * Punkte je Einsatz, getrennt nach Sieg, Unentschieden und Niederlage,
+     * jeweils normiert auf den Gesamtschnitt. Damit ist der mittlere Wert
+     * per Konstruktion 1,0 und der Faktor bleibt eine reine Verschiebung.
+     *
+     * Nur der genannte Wettbewerb zaehlt: 90 Punkte in der 2. Bundesliga
+     * sind nicht 90 in der Bundesliga, und die Prognose gilt fuer letztere.
+     *
+     * Grenzen: gemessen wird an den Spielern, zu denen es Spieltagsdaten
+     * gibt - eigener Kader und Marktangebote. Das ist keine Zufallsstichprobe
+     * der Liga, fuer einen relativen Faktor aber tragfaehig.
+     *
+     * @return array|null ['win','draw','loss','n','avg'] oder null bei zu duenner Lage
+     */
+    public function outcomeFactors($competition = 'Bundesliga', $minJeGruppe = 30)
+    {
+        $rows = cacheRemember('outcome_factors_' . md5($competition), 1800, function () use ($competition) {
+            return $this->db->all(
+                "SELECT CASE
+                            WHEN pp.own_team = pp.team_home AND pp.goals_home > pp.goals_away THEN 'win'
+                            WHEN pp.own_team = pp.team_away AND pp.goals_away > pp.goals_home THEN 'win'
+                            WHEN pp.goals_home = pp.goals_away THEN 'draw'
+                            ELSE 'loss'
+                        END AS outcome,
+                        COUNT(*) AS n,
+                        AVG(pp.points) AS avg_points
+                 FROM player_performances pp
+                 WHERE pp.match_state = 2
+                   AND pp.points IS NOT NULL
+                   AND pp.goals_home IS NOT NULL AND pp.goals_away IS NOT NULL
+                   AND pp.own_team IS NOT NULL AND pp.own_team <> ''
+                   AND pp.own_team IN (pp.team_home, pp.team_away)
+                   AND pp.competition = ?
+                 GROUP BY outcome",
+                [$competition]
+            );
+        });
+
+        $n = ['win' => 0, 'draw' => 0, 'loss' => 0];
+        $s = ['win' => 0.0, 'draw' => 0.0, 'loss' => 0.0];
+        foreach ($rows as $row) {
+            $key = $row['outcome'];
+            if (!isset($n[$key])) {
+                continue;
+            }
+            $n[$key] = (int) $row['n'];
+            $s[$key] = (float) $row['avg_points'];
+        }
+
+        // Jede Gruppe braucht genug Faelle, sonst ist der Faktor Zufall.
+        foreach ($n as $anzahl) {
+            if ($anzahl < $minJeGruppe) {
+                return null;
+            }
+        }
+
+        $gesamtN = array_sum($n);
+        $schnitt = ($n['win'] * $s['win'] + $n['draw'] * $s['draw'] + $n['loss'] * $s['loss']) / $gesamtN;
+
+        // Ein Schnitt bei oder unter null macht die Division sinnlos. Kommt
+        // bei Kickbase-Punkten praktisch nicht vor, aber geraten wird hier
+        // nichts - dann lieber gar kein Faktor.
+        if ($schnitt <= 0) {
+            return null;
+        }
+
+        return [
+            'win'   => $s['win'] / $schnitt,
+            'draw'  => $s['draw'] / $schnitt,
+            'loss'  => $s['loss'] / $schnitt,
+            'n'     => $gesamtN,
+            'avg'   => $schnitt,
+            'counts' => $n,
+            'means'  => $s,
+        ];
+    }
+
+    /**
+     * Spieltage aus dem gespeicherten Spielplan, mit Wahrscheinlichkeiten.
+     *
+     * @param int|null $day Spieltag; ohne Angabe der naechste mit Anstoss in der Zukunft
+     * @return array ['day' => int, 'matches' => [...], 'days' => [alle Spieltagsnummern]]
+     */
+    public function matchdaySchedule($day = null, $competitionId = '1')
+    {
+        // Der Wettbewerb gehoert in jede dieser Abfragen: sonst mischen sich
+        // spaeter zwei Spielzeiten unter derselben Spieltagsnummer, und der
+        // Index (competition_id, day) waere ohnehin nicht nutzbar.
+        $competitionId = (string) $competitionId;
+
+        $days = array_map('intval', array_column($this->db->all(
+            'SELECT DISTINCT day FROM matches WHERE competition_id = ? ORDER BY day ASC',
+            [$competitionId]), 'day'));
+
+        if (!$days) {
+            return ['day' => null, 'matches' => [], 'days' => []];
+        }
+
+        if ($day === null) {
+            $day = $this->db->value(
+                'SELECT day FROM matches WHERE competition_id = ? AND kickoff >= NOW()
+                 ORDER BY kickoff ASC LIMIT 1', [$competitionId]);
+            $day = $day !== null ? (int) $day : end($days);
+        }
+        $day = (int) $day;
+
+        $shorts = json_decode((string) $this->db->getMeta('team_shorts'), true);
+        $shorts = is_array($shorts) ? $shorts : [];
+
+        $rows = $this->db->all(
+            'SELECT * FROM matches WHERE competition_id = ? AND day = ?
+             ORDER BY kickoff ASC, match_id ASC', [$competitionId, $day]);
+
+        $factors = $this->outcomeFactors();
+
+        foreach ($rows as &$row) {
+            $row['home_name'] = pick($shorts, [$row['team_home']], $row['home_short']);
+            $row['away_name'] = pick($shorts, [$row['team_away']], $row['away_short']);
+
+            $probs = self::oddsToProbabilities($row['odds_home'], $row['odds_draw'], $row['odds_away']);
+            $row['probs'] = $probs;
+
+            $row['factor_home'] = $probs !== null ? $this->opponentFactor(
+                ['win' => $probs['home'], 'draw' => $probs['draw'], 'loss' => $probs['away']], $factors) : null;
+            $row['factor_away'] = $probs !== null ? $this->opponentFactor(
+                ['win' => $probs['away'], 'draw' => $probs['draw'], 'loss' => $probs['home']], $factors) : null;
+        }
+        unset($row);
+
+        return ['day' => $day, 'matches' => $rows, 'days' => $days];
+    }
+
+    /**
+     * Erwarteter Punkte-Faktor aus den Siegchancen des eigenen Teams.
+     *
+     * Bewusst ein Erwartungswert ueber alle drei Ausgaenge statt einer
+     * Einsortierung nach dem wahrscheinlichsten: ein Spiel mit 40 Prozent
+     * Siegchance endet nicht zu 40 Prozent gewonnen, sondern gewonnen oder
+     * eben nicht. Der Mix bildet das ab.
+     *
+     * ACHTUNG: Das ist der absolute Faktor eines Spiels. Er darf NICHT
+     * direkt auf die Basis multipliziert werden - siehe relativeFactor().
+     *
+     * @param array      $chances ['win','draw','loss'] als Anteile
+     * @param array|null $factors Ergebnis von outcomeFactors()
+     * @return float|null 1.0 = durchschnittliches Spiel, groesser = guenstiger
+     */
+    public function opponentFactor(array $chances, array $factors = null)
+    {
+        if ($factors === null) {
+            $factors = $this->outcomeFactors();
+        }
+        if ($factors === null) {
+            return null;
+        }
+
+        return $chances['win']  * $factors['win']
+             + $chances['draw'] * $factors['draw']
+             + $chances['loss'] * $factors['loss'];
+    }
+
+    /**
+     * Wie guenstig waren die Spiele, die schon in der Basis stecken?
+     *
+     * Der Punkteschnitt eines Spielers enthaelt die Staerke seines Teams
+     * bereits: wer bei einem Spitzenteam spielt, hat eine hohe Basis, WEIL
+     * sein Team oft gewinnt. Wuerde man darauf noch den Spielfaktor
+     * multiplizieren, zaehlte man dieselbe Teamstaerke ein zweites Mal -
+     * ein Bayern-Spieler bekaeme dauerhaft einen Bonus statt einer Aussage
+     * ueber das konkrete Spiel.
+     *
+     * Deshalb wird je Team der Ausgangsmix der bereits gespielten Partien
+     * als Faktor berechnet. Er ist der Nenner in relativeFactor().
+     *
+     * @return array [team_id => ['factor' => float, 'n' => int]]
+     */
+    public function teamOutcomeMix($competition = 'Bundesliga', $minSpiele = 40)
+    {
+        $factors = $this->outcomeFactors($competition);
+        if ($factors === null) {
+            return [];
+        }
+
+        $rows = cacheRemember('team_mix_' . md5($competition), 1800, function () use ($competition) {
+            return $this->db->all(
+                "SELECT pp.own_team AS team_id,
+                        SUM(CASE WHEN (pp.own_team = pp.team_home AND pp.goals_home > pp.goals_away)
+                                   OR (pp.own_team = pp.team_away AND pp.goals_away > pp.goals_home)
+                                 THEN 1 ELSE 0 END) AS w,
+                        SUM(CASE WHEN pp.goals_home = pp.goals_away THEN 1 ELSE 0 END) AS d,
+                        COUNT(*) AS n
+                 FROM player_performances pp
+                 WHERE pp.match_state = 2
+                   AND pp.points IS NOT NULL
+                   AND pp.goals_home IS NOT NULL AND pp.goals_away IS NOT NULL
+                   AND pp.own_team IS NOT NULL AND pp.own_team <> ''
+                   AND pp.own_team IN (pp.team_home, pp.team_away)
+                   AND pp.competition = ?
+                 GROUP BY pp.own_team",
+                [$competition]
+            );
+        });
+
+        $out = [];
+        foreach ($rows as $row) {
+            $n = (int) $row['n'];
+            // Unter der Schwelle ist der Mix Zufall. Dann lieber kein Nenner
+            // als ein verrauschter - der Faktor entfaellt fuer dieses Team.
+            if ($n < $minSpiele) {
+                continue;
+            }
+            $w = (int) $row['w'];
+            $d = (int) $row['d'];
+            $l = $n - $w - $d;
+
+            $out[(string) $row['team_id']] = [
+                'factor' => ($w * $factors['win'] + $d * $factors['draw'] + $l * $factors['loss']) / $n,
+                'n'      => $n,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Der Faktor, der tatsaechlich in die Prognose geht: wie guenstig ist
+     * das naechste Spiel im Vergleich zu dem, was der Spieler gewohnt ist?
+     *
+     * 1,0 heisst "so schwer wie sonst auch" und aendert nichts. Ein
+     * Bayern-Spieler gegen einen Spitzengegner landet UNTER 1, obwohl das
+     * Spiel absolut gesehen gute Siegchancen hat - genau das ist gewollt,
+     * denn seine hohe Basis stammt aus den leichteren Spielen davor.
+     *
+     * @param float|null $absolut  Ergebnis von opponentFactor()
+     * @param float|null $gewohnt  Team-Faktor aus teamOutcomeMix()
+     * @return float|null
+     */
+    public function relativeFactor($absolut, $gewohnt)
+    {
+        if ($absolut === null || $gewohnt === null || $gewohnt <= 0) {
+            return null;
+        }
+
+        // Deckel gegen Ausreisser: bei duenner Stichprobe kann der Nenner
+        // weit danebenliegen, und die Prognose soll davon nicht ins
+        // Absurde kippen. Die gemessenen Werte liegen klar innerhalb.
+        return max(0.5, min(1.6, $absolut / $gewohnt));
     }
 
     // ---------------------------------------------------------- Marktwert-Radar
@@ -1029,10 +1369,11 @@ class Analyse
                 'base'            => $fc['base'],
                 'start_rate'      => $fc['start_rate'],
                 'availability'    => $fc['availability'],
+                'opponent'        => $fc['opponent'],
                 'created_at'      => $now,
                 'updated_at'      => $now,
             ], ['match_date', 'forecast_points', 'baseline_points', 'base',
-                'start_rate', 'availability', 'updated_at']);
+                'start_rate', 'availability', 'opponent', 'updated_at']);
             $written++;
         }
 

@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS forecast_log (
     base            DECIMAL(7,2) NULL,
     start_rate      DECIMAL(4,3) NULL,
     availability    DECIMAL(4,3) NULL,
+    opponent        DECIMAL(4,3) NULL,   -- Gegner-Faktor, NULL = keine Quote
     actual_points   INT          NULL,
     actual_minutes  SMALLINT     NULL,
     created_at      DATETIME     NOT NULL,
@@ -174,6 +175,37 @@ CREATE TABLE IF NOT EXISTS forecast_log (
     PRIMARY KEY (player_id, season_id, day),
     KEY idx_fc_open (resolved_at),
     KEY idx_fc_day (season_id, day)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Spielplan des Wettbewerbs, ein Eintrag je Partie.
+--
+-- Der Grund, warum das eine eigene Tabelle ist und nicht nur ein Abruf bei
+-- Bedarf: die Wettquoten. Kickbase liefert sie nur fuer die naechsten beiden
+-- Spieltage und wirft sie danach weg. Wer sie nicht mitschreibt, kann
+-- hinterher nie pruefen, ob die Erwartung vor dem Spiel etwas taugte.
+CREATE TABLE IF NOT EXISTS matches (
+    match_id       VARCHAR(16)  NOT NULL,
+    competition_id VARCHAR(16)  NOT NULL,
+    day            SMALLINT     NOT NULL,
+    kickoff        DATETIME     NULL,
+    team_home      VARCHAR(16)  NULL,
+    team_away      VARCHAR(16)  NULL,
+    home_short     VARCHAR(8)   NULL,
+    away_short     VARCHAR(8)   NULL,
+    goals_home     TINYINT      NULL,
+    goals_away     TINYINT      NULL,
+    state          TINYINT      NULL,   -- 0 = nicht angepfiffen
+    -- Dezimalquoten des Buchmachers. 6,2 reicht bis 9999,99.
+    odds_home      DECIMAL(6,2) NULL,
+    odds_draw      DECIMAL(6,2) NULL,
+    odds_away      DECIMAL(6,2) NULL,
+    odds_seen_at   DATETIME     NULL,   -- wann die Quoten zuletzt geliefert wurden
+    updated_at     DATETIME     NOT NULL,
+    PRIMARY KEY (match_id),
+    KEY idx_matches_day (competition_id, day),
+    KEY idx_matches_kickoff (kickoff),
+    KEY idx_matches_home (team_home),
+    KEY idx_matches_away (team_away)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Kleiner Key-Value-Speicher (letzter Sync, Budget, Teamwert, ...).
@@ -191,3 +223,9 @@ CREATE TABLE IF NOT EXISTS meta (
 -- players.status war TINYINT. Der Kickbase-Statuscode 128 passt da nicht
 -- hinein - der Sync brach mit "Out of range value for column 'status'" ab.
 ALTER TABLE players MODIFY status SMALLINT NULL;
+
+-- forecast_log kennt seit dem Gegner-Faktor einen vierten Baustein.
+-- MySQL kann kein ADD COLUMN IF NOT EXISTS; beim zweiten Setup-Lauf meldet
+-- das hier "Duplicate column" (1060). bin/setup.php laesst genau diese
+-- Fehlercodes im Migrations-Abschnitt durchgehen.
+ALTER TABLE forecast_log ADD COLUMN opponent DECIMAL(4,3) NULL AFTER availability;

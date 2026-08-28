@@ -121,6 +121,11 @@ function lineupCard(array $player, array $next, array $shorts)
                 <?= $m['home'] ? 'H' : 'A' ?> gegen
                 <?= e(isset($shorts[$m['opponent']]) ? $shorts[$m['opponent']] : $m['opponent']) ?>
                 &middot; <?= e(date('d.m.', strtotime($m['date']))) ?>
+                <?php if ($m['factor'] !== null): ?>
+                    &middot; <span class="<?= trendClass($m['factor'] - 1) ?>"
+                        title="Gegner-Faktor aus den Siegchancen: <?= e(round($m['chances']['win'] * 100)) ?> % Sieg">
+                        &times;<?= e(number_format($m['factor'], 2, ',', '.')) ?></span>
+                <?php endif; ?>
             </div>
         <?php endif; ?>
     </div>
@@ -200,7 +205,7 @@ function lineupCard(array $player, array $next, array $shorts)
     <h2>Wie die Prognose entsteht</h2>
     <p class="muted">
         Erwartete Punkte = <strong>Basis</strong> &times; <strong>Einsatzquote</strong>
-        &times; <strong>Verfuegbarkeit</strong>.
+        &times; <strong>Verfuegbarkeit</strong> &times; <strong>Gegner</strong>.
         Die Basis sind die Punkte je Einsatz, zu 60 % aus den letzten fuenf
         Einsaetzen und zu 40 % aus allen gespeicherten. Die Einsatzquote kommt
         aus den letzten zehn Spieltagen: ein Spiel ueber 60 Minuten zaehlt voll,
@@ -210,11 +215,17 @@ function lineupCard(array $player, array $next, array $shorts)
         verletzte und gesperrte mit 0 %.
     </p>
     <p class="muted">
-        Nicht enthalten: Gegnerstaerke, Heimvorteil, Wechselgeruechte, und die
-        voraussichtliche Aufstellung des Vereins. Fuer Spieler ohne Historie
-        gibt es keine Prognose - da steht bewusst nichts statt einer erfundenen
-        Zahl. Und wo die Werte aus der 2. Bundesliga stammen, steht das auf der
-        Karte: die Punkte sind dann nicht direkt vergleichbar.
+        Der <strong>Gegner-Faktor</strong> steht auf der Karte hinter dem naechsten Spiel.
+        Er kommt aus den Wettquoten und daraus, wie stark Kickbase-Punkte am Spielausgang
+        haengen – gemessen an den eigenen Spieltagsdaten, nachzulesen im
+        <a href="schedule.php">Spielplan</a>. Fehlt die Quote, ist der Faktor 1 und
+        aendert nichts.
+    </p>
+    <p class="muted">
+        Nicht enthalten: Wechselgeruechte und die voraussichtliche Aufstellung des
+        Vereins. Fuer Spieler ohne Historie gibt es keine Prognose - da steht bewusst
+        nichts statt einer erfundenen Zahl. Und wo die Werte aus der 2. Bundesliga
+        stammen, steht das auf der Karte: die Punkte sind dann nicht direkt vergleichbar.
     </p>
     <?php
     $perfSync = $db->getMeta('performances_synced_at');

@@ -450,6 +450,60 @@ class Kickbase
         return $this->get('/v4/competitions/' . rawurlencode($competitionId) . '/matchdays');
     }
 
+    /**
+     * Spielplan flach: eine Zeile je Spiel, passend zur Tabelle matches.
+     *
+     * Der interessanteste Teil sind die Wettquoten in bo (o1 Heimsieg,
+     * ox Unentschieden, o2 Auswaertssieg). Sie stehen nur fuer die
+     * naechsten beiden Spieltage drin und verschwinden danach wieder -
+     * wer sie nicht mitschreibt, hat sie nicht.
+     *
+     * Tore sind bei ungespielten Partien nicht enthalten. Ob sie nach
+     * Abpfiff auftauchen und unter welchem Namen, ist unbestaetigt;
+     * die Kandidatenliste greift daneben einfach ins Leere.
+     *
+     * @return array Liste flacher Zeilen
+     */
+    public function schedule($competitionId = '1')
+    {
+        $res = $this->matchdays($competitionId);
+
+        $out = [];
+        foreach (isset($res['it']) ? $res['it'] : [] as $matchday) {
+            $day = pickInt($matchday, ['day']);
+
+            foreach (isset($matchday['it']) ? $matchday['it'] : [] as $match) {
+                $id = pick($match, ['mi']);
+                if ($id === null) {
+                    continue;
+                }
+                $odds = isset($match['bo']) && is_array($match['bo']) ? $match['bo'] : [];
+
+                $out[] = [
+                    'match_id'   => (string) $id,
+                    'day'        => pickInt($match, ['day'], $day),
+                    'kickoff'    => isoToMysql(pick($match, ['dt'])),
+                    'team_home'  => (string) pick($match, ['t1'], ''),
+                    'team_away'  => (string) pick($match, ['t2'], ''),
+                    'home_short' => pick($match, ['t1sy']),
+                    'away_short' => pick($match, ['t2sy']),
+                    'goals_home' => pickInt($match, ['t1g']),
+                    'goals_away' => pickInt($match, ['t2g']),
+                    'state'      => pickInt($match, ['st']),
+                    // Auf > 0 pruefen, nicht auf isset: eine Quote von 0 ist
+                    // keine Quote, sondern ein Platzhalter fuer einen
+                    // geschlossenen Markt. Als 0 gespeichert wuerde sie eine
+                    // echte, schon archivierte Quote ueberschreiben.
+                    'odds_home'  => self::odds($odds, 'o1'),
+                    'odds_draw'  => self::odds($odds, 'ox'),
+                    'odds_away'  => self::odds($odds, 'o2'),
+                ];
+            }
+        }
+
+        return $out;
+    }
+
     /** Aktivitaeten der Liga (Kaeufe, Verkaeufe der Mitspieler). */
     public function activities($leagueId, $start = 0, $max = 25)
     {
@@ -457,6 +511,18 @@ class Kickbase
             'start' => $start,
             'max'   => $max,
         ]);
+    }
+
+    /** Eine einzelne Quote, oder null wenn sie keine ist. */
+    private static function odds(array $odds, $key)
+    {
+        if (!isset($odds[$key])) {
+            return null;
+        }
+        $wert = (float) $odds[$key];
+        // Eine Dezimalquote unter 1 gibt es nicht - das waere ein Verlust
+        // beim Gewinn. Solche Werte sind Platzhalter, keine Daten.
+        return $wert >= 1.0 ? $wert : null;
     }
 
     // ------------------------------------------------------------- Mapping

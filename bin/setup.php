@@ -71,10 +71,28 @@ $sql = file_get_contents($root . '/schema.sql');
 $sql = preg_replace('/^\s*--.*$/m', '', $sql);
 $statements = array_filter(array_map('trim', explode(';', $sql)));
 
+// Fehlercodes, die bei einer schon eingespielten Migration normal sind.
+$schonDa = [1060, 1061, 1091];   // Spalte / Schluessel gibt es bereits
+
+$ausgefuehrt = 0;
+$uebersprungen = 0;
 foreach ($statements as $statement) {
-    $db->run($statement);
+    $istMigration = stripos($statement, 'ALTER') === 0;
+    try {
+        $db->run($statement);
+        $ausgefuehrt++;
+    } catch (PDOException $ex) {
+        $code = isset($ex->errorInfo[1]) ? (int) $ex->errorInfo[1] : 0;
+        // Der Migrations-Abschnitt laeuft bei jedem Setup erneut. "Gibt es
+        // schon" ist dabei der Normalfall - alles andere bleibt ein Fehler.
+        if (!$istMigration || !in_array($code, $schonDa, true)) {
+            throw $ex;
+        }
+        $uebersprungen++;
+    }
 }
-echo "   " . count($statements) . " Tabellen-Statements ausgefuehrt.\n";
+echo "   {$ausgefuehrt} Statements ausgefuehrt";
+echo $uebersprungen > 0 ? ", {$uebersprungen} Migration(en) waren schon drin.\n" : ".\n";
 
 // Den eigenen Pfad festhalten: hier laeuft PHP als CLI und kennt ihn exakt.
 // Im Webserver ist er nicht ermittelbar, der Sync-Knopf braucht ihn aber.

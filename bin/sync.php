@@ -89,7 +89,7 @@ try {
         $sync->syncPlayerAggregates($leagueId, $aggLimit);
         closeRun($db, $runId, 'ok', null);
     } elseif (isset($args['perf'])) {
-        $sync->syncTeams($config['kickbase']['competition_id']);
+        $sync->syncSchedule($config['kickbase']['competition_id']);
         $sync->syncPerformances($leagueId);
         $db->setMeta('last_sync', date('c'));
         closeRun($db, $runId, 'ok', null);

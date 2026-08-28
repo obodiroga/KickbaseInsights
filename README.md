@@ -91,6 +91,19 @@ php -S localhost:8080 -t public
 Dann <http://localhost:8080/> öffnen. Der Sync-Knopf funktioniert dabei
 ebenfalls, weil er einen eigenen CLI-Prozess startet.
 
+### Nach einem Update
+
+`schema.sql` hat am Dateiende einen Migrations-Abschnitt. Neue Tabellen und
+Spalten kommen dort an, und `bin/setup.php` spielt sie ein:
+
+```
+php bin/setup.php
+```
+
+Das ist wiederholbar – schon vorhandene Spalten werden übersprungen. Wer es
+auslässt, bekommt beim nächsten Sync oder Seitenaufruf einen SQL-Fehler über
+eine fehlende Tabelle oder Spalte, keinen stillen Datenverlust.
+
 ## Laufender Betrieb
 
 Der bequemste Weg ist der Knopf **Aktualisieren** oben rechts in der App. Er
@@ -118,7 +131,7 @@ Hintergrundprozess gestartet wird.
 
 | Befehl | Zweck | Dauer |
 |---|---|---|
-| `php bin/sync.php --market` | Transfermarkt, eigener Kader, Liga-Aktivitäten | ~5 s |
+| `php bin/sync.php --market` | Transfermarkt, Kader, Liga-Aktivitäten, Spielplan | ~5 s |
 | `php bin/sync.php --perf` | Spieltags-Punkte des eigenen Kaders, Team-Kürzel | ~7 s |
 | `php bin/sync.php --agg-only` | Saison-Aggregate (Punkte, Einsätze, Spielzeit) | ~0,7 s je Spieler |
 | `php bin/sync.php` | Standardlauf: alle Spieler, 60 Marktwert-Historien, 60 Aggregate | ~1,5 min |
@@ -173,6 +186,7 @@ public/radar.php      erwartete Marktwert-Entwicklung
 public/accuracy.php   Prognose gegen die Wirklichkeit
 public/market.php     Transfermarkt mit Bewertung
 public/activity.php   Liga-Aktivitäten: Transfers der Mitspieler
+public/schedule.php   Spielplan mit Siegchancen und Gegner-Faktor
 public/trends.php     Gewinner, Verlierer, Punkte pro Million
 public/compare.php    Spielervergleich
 public/player.php     Spielerdetail mit Marktwert-Chart
@@ -227,9 +241,81 @@ Der Saldo je Manager ist reine Kassenrechnung (Verkäufe minus Käufe). Was ein
 noch nicht verkaufter Spieler wert ist, steht bewusst nicht darin – dafür
 fehlen die Kaderdaten der Mitspieler.
 
+## Spielplan und Gegner-Faktor
+
+Der Spielplan-Endpunkt liefert nebenbei etwas, das man leicht übersieht:
+**Wettquoten** (`bo` mit `o1`/`ox`/`o2`). Genau dort steckt die Gegnerstärke,
+und zwar samt Heimvorteil und Formkurve, weil der Buchmacher das schon
+eingepreist hat.
+
+Der Haken: Kickbase liefert die Quoten nur für die **nächsten beiden
+Spieltage** und wirft sie danach weg. Deshalb gibt es die Tabelle `matches`,
+deshalb läuft `syncSchedule()` bei jedem `--market` mit, und deshalb werden
+Quoten **nie mit `NULL` überschrieben** – einmal gesehen, für immer da. Das
+ist dieselbe Idee wie beim Marktwert-Archiv.
+
+Aus den Quoten werden Wahrscheinlichkeiten, bereinigt um die Marge des
+Buchmachers (rund 7 %) – ohne diese Normierung ergäben die Kehrwerte
+zusammen über 100 %.
+
+Wie stark Kickbase-Punkte am Spielausgang hängen, ist **gemessen**, nicht
+angenommen – an den eigenen Spieltagsdaten, nur Bundesliga:
+
+| Ausgang | Einsätze | Ø Punkte | Faktor |
+|---|---|---|---|
+| Sieg | 351 | 109,1 | ×1,52 |
+| Unentschieden | 212 | 73,1 | ×1,02 |
+| Niederlage | 341 | 32,7 | ×0,46 |
+
+Ein Spieler im siegreichen Team macht also mehr als das Dreifache eines
+Spielers im unterlegenen. Die Faktoren sind auf den Gesamtschnitt normiert,
+ihr stichprobengewichteter Mittelwert ist exakt 1,0.
+
+Der Faktor einer Mannschaft ist der Erwartungswert daraus, gewichtet mit
+ihren Siegchancen. Bewusst ein Mix über alle drei Ausgänge statt einer
+Einsortierung nach dem wahrscheinlichsten: Ein Spiel mit 40 % Siegchance
+endet nicht zu 40 % gewonnen, sondern gewonnen oder eben nicht.
+
+### Warum dieser Faktor nicht direkt in die Prognose geht
+
+Die naheliegende Rechnung `Basis × Spielfaktor` ist **falsch**, und zwar
+auf eine Art, die man leicht übersieht: Die Basis ist der Punkteschnitt des
+Spielers und enthält die Stärke seines Teams bereits. Wer bei einem
+Spitzenteam spielt, hat eine hohe Basis, *weil* sein Team oft gewinnt.
+Multipliziert man den Spielfaktor obendrauf, zählt dieselbe Teamstärke
+zweimal – ein Bayern-Spieler bekäme dauerhaft einen Bonus statt einer
+Aussage über das konkrete Spiel.
+
+Gemessen an einem Kader von 14 Spielern hob die naive Variante die
+Prognosesumme um 6,6 % an, einzelne Spieler um bis zu 34 %.
+
+Deshalb wird durch das **gewohnte Niveau** des Teams geteilt – den
+Ausgangsmix seiner bereits gespielten Partien:
+
+```
+Gegner-Faktor = Faktor(nächstes Spiel) / Faktor(bisherige Spiele des Teams)
+```
+
+Damit heißt 1,0 „so schwer wie sonst auch". Bayern gegen einen
+Spitzengegner landet unter 1,0, obwohl die Siegchance absolut gut ist –
+für Bayern ist es eben ein schweres Spiel. Auf demselben Kader bleiben
+statt +6,6 % noch +2,2 % übrig.
+
+Teams mit weniger als 40 erfassten Einsätzen bekommen **keinen** Faktor,
+statt einen aus Rauschen gebildeten. Der Quotient ist zusätzlich auf
+0,5 bis 1,6 begrenzt, damit ein schlecht geschätzter Nenner die Prognose
+nicht ins Absurde kippt.
+
+Grenzen: Gemessen wird an den Spielern, zu denen es Spieltagsdaten gibt –
+eigener Kader und Marktangebote. Das ist keine Zufallsstichprobe der Liga.
+Gezählt werden außerdem **Einsätze, nicht Spiele**: Vereine, von denen
+zufällig mehr Spieler erfasst sind, wiegen in der Normierung schwerer.
+Für einen relativen Faktor ist das tragfähig, für Aussagen über einzelne
+Vereine nicht.
+
 ## Zur Prognose auf der Aufstellungsseite
 
-Erwartete Punkte = **Basis × Einsatzquote × Verfügbarkeit**.
+Erwartete Punkte = **Basis × Einsatzquote × Verfügbarkeit × Gegner**.
 
 * **Basis** – Punkte je Einsatz: 60 % aus den letzten fünf Einsätzen, 40 % aus
   allen gespeicherten
@@ -237,14 +323,21 @@ Erwartete Punkte = **Basis × Einsatzquote × Verfügbarkeit**.
   voll, ein Kurzeinsatz mit 0,4
 * **Verfügbarkeit** – angeschlagen 50 %, Aufbautraining 25 %, verletzt oder
   gesperrt 0 %
+* **Gegner** – siehe oben; ohne Quote ist der Faktor 1 und ändert nichts
 
 Grundlage ist `player_performances`, gefüllt von `sync.php --perf`. Zu
 Saisonbeginn stammen die Werte zwangsläufig aus der Vorsaison. Wo sie aus der
 2. Bundesliga kommen, steht das auf der Spielerkarte – die Punkte sind dann
 nicht direkt vergleichbar. Spieler ohne Historie bekommen bewusst keine Zahl.
 
-Nicht enthalten: Gegnerstärke, Heimvorteil, Wechselgerüchte, die
-voraussichtliche Vereinsaufstellung.
+Nicht enthalten: Wechselgerüchte und die voraussichtliche
+Vereinsaufstellung. Gegnerstärke und Heimvorteil stecken seit dem
+Gegner-Faktor drin, solange für das Spiel eine Quote vorliegt.
+
+Ob der Faktor die Prognose wirklich verbessert, steht noch nicht fest – die
+Seite **Prognose** weist ihn je Eintrag aus, gemessen werden kann er erst
+nach ein paar Spieltagen. Bis dahin ist er eine begründete Erweiterung, kein
+bewiesener Gewinn.
 
 ### Taugt die Prognose etwas?
 
@@ -317,7 +410,7 @@ sich auf einen Bruchteil der Liga.
 
 Die Spielerliste kommt deshalb aus den **Vereinsprofilen**: 18 Requests,
 je 22–30 Spieler, zusammen rund 470. Die Vereins-IDs stammen aus dem
-Spielplan (`syncTeams`), der deshalb vorher läuft.
+Spielplan (`syncSchedule`), der deshalb vorher läuft.
 
 Nebeneffekt, der mehr wert ist als die Liste selbst: jeder Lauf schreibt für
 **alle** Spieler einen Marktwert-Punkt in `player_market_values`. Die

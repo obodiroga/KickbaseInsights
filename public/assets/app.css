@@ -267,6 +267,23 @@ td a:hover { color: var(--accent); text-decoration: underline; }
     font-variant-numeric: tabular-nums;
 }
 
+/* Spielplan: drei Ausgaenge nebeneinander statt eines Fortschrittsbalkens.
+   Die Segmente liegen im Fluss, nicht uebereinander wie beim Score. */
+.scorebar.chance {
+    display: flex;
+    width: 132px;
+}
+
+.scorebar.chance .fill {
+    position: static;
+    border-radius: 0;
+    height: 100%;
+}
+
+.scorebar.chance .fill.good { background: rgba(62, 201, 138, 0.55); }
+.scorebar.chance .fill.mid  { background: rgba(232, 176, 70, 0.45); }
+.scorebar.chance .fill.low  { background: rgba(239, 107, 107, 0.45); }
+
 /* ---------------------------------------------------------------- Formen */
 
 form.inline {
